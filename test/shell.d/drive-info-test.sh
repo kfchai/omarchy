@@ -24,24 +24,24 @@ dev=${*: -1}
 name=${dev#/dev/}
 opts=$*
 
-parent_of() {
-  case "$1" in
-    sda1|sda2) printf 'sda\n' ;;
-    root) printf 'sda2\n' ;;
+if [[ $opts == *-dno\ PKNAME* ]]; then
+  # With -d, only the device's own parent; a mapping asked about directly has none.
+  case "$name" in
+    sda1 | sda2) printf 'sda\n' ;;
+    nvme0n1p1 | nvme0n1p2) printf 'nvme0n1\n' ;;
     sdb1) printf 'sdb\n' ;;
-    *) : ;;
+    *) printf '\n' ;;
   esac
-}
-
-if [[ $opts == *-no\ PKNAME* ]]; then
-  # Without -d, lsblk lists the device and every descendant, each with the
-  # parent name of that row. The device itself has no parent, so the first
-  # non-empty line is the parent of the device asked about.
+elif [[ $opts == *-no\ PKNAME* ]]; then
+  # Without -d, a row per descendant too, and not in tree order: on NVMe the
+  # mapping's row comes before the partitions', as real lsblk lists a loop disk.
   case "$name" in
     sda) printf '\nsda\nsda\nsda2\n' ;;
     sda1) printf 'sda\n' ;;
     sda2) printf 'sda\nsda2\n' ;;
-    root) printf 'sda2\n' ;;
+    nvme0n1) printf '\nnvme0n1p2\nnvme0n1\nnvme0n1\n' ;;
+    nvme0n1p2) printf 'nvme0n1p2\nnvme0n1\n' ;;
+    root) printf '\n' ;;
     sdb) printf '\nsdb\n' ;;
     sdb1) printf 'sdb\n' ;;
   esac
@@ -51,6 +51,8 @@ elif [[ $opts == *-dno\ SIZE* ]]; then
     sda1) printf '2G\n' ;;
     sda2) printf '929.5G\n' ;;
     root) printf '929.5G\n' ;;
+    nvme0n1) printf '1.8T\n' ;;
+    nvme0n1p2) printf '1.8T\n' ;;
     sdb) printf '931.5G\n' ;;
     sdb1) printf '931.5G\n' ;;
   esac
@@ -62,6 +64,7 @@ elif [[ $opts == *-dno\ VENDOR* ]]; then
 elif [[ $opts == *-dno\ MODEL* ]]; then
   case "$name" in
     sda) printf 'Samsung SSD 870 EVO 1TB\n' ;;
+    nvme0n1) printf 'Samsung SSD 990 PRO 2TB\n' ;;
     # Some controllers repeat the vendor at the head of the model string.
     sdb) printf 'ATA WDC WD10EZEX-08WN4A0\n' ;;
   esac
@@ -75,6 +78,12 @@ elif [[ $opts == *TYPE,NAME,FSTYPE,MOUNTPOINT* ]]; then
       ;;
     sda2)
       printf 'part sda2 crypto_LUKS \n'
+      printf 'crypt root ext4 /\n'
+      ;;
+    nvme0n1)
+      printf 'disk nvme0n1  \n'
+      printf 'part nvme0n1p1 vfat /boot\n'
+      printf 'part nvme0n1p2 crypto_LUKS \n'
       printf 'crypt root ext4 /\n'
       ;;
     sdb)
@@ -108,13 +117,22 @@ out=$(drive_info /dev/sda2)
   fail "drive info reports the size of the device asked about, not the disk" "$out"
 pass "drive info resolves a partition up to its disk"
 
-# The mapping is two levels down; one hop up is still a partition.
+# NVMe lists the mapping's row first, so the first parent named is the partition.
+out=$(drive_info /dev/nvme0n1)
+[[ $out == *"Samsung SSD 990 PRO 2TB"* ]] ||
+  fail "drive info keeps the model of an NVMe disk with a crypt layer below it" "$out"
+[[ $out == *"vfat(/boot)"* && $out == *"crypto_LUKS"* ]] ||
+  fail "drive info summarises every partition of the NVMe disk" "$out"
+out=$(drive_info /dev/nvme0n1p2)
+[[ $out == *"Samsung SSD 990 PRO 2TB"* ]] ||
+  fail "drive info resolves an NVMe partition to its disk" "$out"
+pass "drive info resolves an NVMe disk whatever order lsblk lists it in"
+
+# A mapping has no parent lsblk will name, so it is reported as itself.
 out=$(drive_info /dev/root)
-[[ $out == *"Samsung SSD 870 EVO 1TB"* ]] ||
-  fail "drive info walks up through a crypt mapping to the disk" "$out"
 [[ $out == "/dev/root (929.5G)"* ]] ||
   fail "drive info does not double-prefix the device path of a mapping" "$out"
-pass "drive info walks up through a nested mapping"
+pass "drive info reports a mapping by its own path"
 
 # sdb reports the vendor twice: once as VENDOR and again at the head of MODEL.
 # sda cannot cover this -- its model shares no word with its vendor, so it reads
